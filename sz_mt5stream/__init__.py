@@ -1,6 +1,7 @@
 import threading
 import time
 from typing import Optional, Callable, Literal, Dict
+from datetime import datetime, timezone
 
 import pandas as pd
 import MetaTrader5 as mt5
@@ -40,6 +41,14 @@ class MT5Stream:
         "M15": "15min",
         "H1": "1H",
         "D1": "1D",
+    }
+    
+    _MT5_TIMEFRAME: Dict[str, int] = {
+        "M1": mt5.TIMEFRAME_M1,
+        "M5": mt5.TIMEFRAME_M5,
+        "M15": mt5.TIMEFRAME_M15,
+        "H1": mt5.TIMEFRAME_H1,
+        "D1": mt5.TIMEFRAME_D1,
     }
 
     def __init__(
@@ -82,22 +91,34 @@ class MT5Stream:
         self._thread: Optional[threading.Thread] = None
         self._last_tick_msc: int = 0
         self._ticks = pd.DataFrame(columns=["time", "bid", "ask", "last", "volume", "time_msc"])
-        self._bars = pd.DataFrame(columns=["open", "high", "low", "close", "tick_volume"])
-        self._last_bar_close: Optional[pd.Timestamp] = None
+        self._bars = pd.DataFrame(columns=["time", "open", "high", "low", "close", "tick_volume", "spread", "real_volume"])
+        self._last_candle_time: Optional[int] = None  # Unix timestamp of last candle
 
     @property
     def ticks(self) -> pd.DataFrame:
         """
         Return a copy of the rolling tick buffer.
+        Timestamps are timezone-naive and represent broker's local time.
         """
-        return self._ticks.copy()
+        df = self._ticks.copy()
+        if not df.empty and df["time"].dt.tz is not None:
+            # Convert UTC to naive datetime (broker time)
+            df["time"] = df["time"].dt.tz_localize(None)
+        return df
 
     @property
     def bars(self) -> pd.DataFrame:
         """
-        Return a copy of the rolling closed bar buffer.
+        Return a copy of the rolling closed bar buffer with time as index.
+        Timestamps are timezone-naive and represent broker's local time.
         """
-        return self._bars.copy()
+        if self._bars.empty:
+            return self._bars.copy()
+        df = self._bars.copy()
+        # Convert UTC to naive datetime (broker time)
+        df["time"] = df["time"].dt.tz_localize(None)
+        df = df.set_index("time")
+        return df
 
     def start(self, callback: Optional[Callable[[pd.DataFrame], None]] = None) -> None:
         """
@@ -132,7 +153,7 @@ class MT5Stream:
         if not df_new.empty:
             self._append_ticks(df_new)
             if self.bars_timeframe:
-                self._update_bars_from_ticks(df_new)
+                self._fetch_completed_candles()
         return df_new
 
     def _loop(self, callback: Optional[Callable[[pd.DataFrame], None]]) -> None:
@@ -153,10 +174,21 @@ class MT5Stream:
         Retrieve only new ticks based on time_msc frontier.
 
         Returns:
-            DataFrame of new ticks with UTC timestamps and expected columns.
+            DataFrame of new ticks with UTC timestamps (internally) and expected columns.
+            When accessed via the ticks property, timestamps are converted to broker's local time.
         """
+        # Get broker's current time - this is critical for timezone correctness
+        # MT5's copy_ticks_from() expects datetime in broker's local timezone
+        tick = mt5.symbol_info_tick(self.symbol)
+        if tick is not None:
+            # Use broker's server time (as naive datetime, no timezone)
+            request_time = datetime.fromtimestamp(tick.time)
+        else:
+            # Fallback to UTC if we can't get broker time
+            request_time = datetime.now(timezone.utc).replace(tzinfo=None)
+        
         ticks = mt5.copy_ticks_from(
-            self.symbol, pd.Timestamp.utcnow().to_pydatetime(), 1000, mt5.COPY_TICKS_ALL
+            self.symbol, request_time, 1000, mt5.COPY_TICKS_ALL
         )
         if ticks is None or len(ticks) == 0:
             return pd.DataFrame(columns=self._ticks.columns)
@@ -164,6 +196,7 @@ class MT5Stream:
         df = df[df["time_msc"] > self._last_tick_msc]
         if df.empty:
             return pd.DataFrame(columns=self._ticks.columns)
+        # Convert timestamps to UTC (timezone-aware)
         df["time"] = pd.to_datetime(df["time"], unit="s", utc=True)
         self._last_tick_msc = int(df["time_msc"].iloc[-1])
         return df[["time", "bid", "ask", "last", "volume", "time_msc"]]
@@ -179,34 +212,119 @@ class MT5Stream:
         if len(self._ticks) > self.rolling_ticks:
             self._ticks = self._ticks.iloc[-self.rolling_ticks :].reset_index(drop=True)
 
-    def _update_bars_from_ticks(self, df_new: pd.DataFrame) -> None:
+    def _get_period_start(self, timestamp: int) -> int:
         """
-        Aggregate closed bars from accumulated ticks using pandas resampling.
-        Only closed bars are appended to the rolling bar buffer.
+        Get the start timestamp of the period that contains the given timestamp.
+        This aligns timestamps to timeframe boundaries (e.g., M5 aligns to :00, :05, :10, etc.)
+        
+        Args:
+            timestamp: Unix timestamp in seconds
+            
+        Returns:
+            Unix timestamp of the period start
         """
-        rule = self._RESAMPLE_RULE[self.bars_timeframe]
-        df = self._ticks.copy().set_index("time")
-        ohlc = df["last"].resample(rule, label="right", closed="right").agg(["first", "max", "min", "last"])
-        vol = df["volume"].resample(rule, label="right", closed="right").sum()
-        bars = pd.concat([ohlc, vol], axis=1)
-        bars.columns = ["open", "high", "low", "close", "tick_volume"]
-        if bars.empty:
-            return
-        last_close_time = bars.index[-1]
-        if self._last_bar_close is None:
-            closed_bars = bars.iloc[:-1] if len(bars) > 1 else bars.iloc[0:0]
+        dt = datetime.fromtimestamp(timestamp, tz=timezone.utc)
+        
+        if self.bars_timeframe == "M1":
+            # Align to minute boundary
+            return int(dt.replace(second=0, microsecond=0).timestamp())
+        elif self.bars_timeframe == "M5":
+            # Align to 5-minute boundary
+            minute = (dt.minute // 5) * 5
+            return int(dt.replace(minute=minute, second=0, microsecond=0).timestamp())
+        elif self.bars_timeframe == "M15":
+            # Align to 15-minute boundary
+            minute = (dt.minute // 15) * 15
+            return int(dt.replace(minute=minute, second=0, microsecond=0).timestamp())
+        elif self.bars_timeframe == "H1":
+            # Align to hour boundary
+            return int(dt.replace(minute=0, second=0, microsecond=0).timestamp())
+        elif self.bars_timeframe == "D1":
+            # Align to day boundary (00:00:00)
+            return int(dt.replace(hour=0, minute=0, second=0, microsecond=0).timestamp())
         else:
-            closed_bars = bars[bars.index > self._last_bar_close]
-            if len(closed_bars) > 0 and closed_bars.index[-1] == last_close_time:
-                closed_bars = closed_bars.iloc[:-1]
-        if closed_bars.empty:
+            return timestamp
+
+    def _fetch_completed_candles(self) -> None:
+        """
+        Fetch completed candles directly from MT5 broker data.
+        This ensures candles match exactly what the broker provides,
+        including accurate volume, spread, and OHLC values.
+        
+        Only fetches when a new period has completed (e.g., new minute for M1, new 5-min for M5).
+        """
+        if not self.bars_timeframe:
             return
+        
+        # Get broker's current time
+        tick = mt5.symbol_info_tick(self.symbol)
+        if tick is None:
+            return
+        
+        current_time = tick.time
+        current_period = self._get_period_start(current_time)
+        
+        # Check if we're in a new period (i.e., previous period just closed)
+        if self._last_candle_time is not None:
+            last_period = self._get_period_start(self._last_candle_time)
+            # Only fetch if we've moved to a new period
+            if current_period <= last_period:
+                return  # Still in same period or went backwards, don't fetch
+        
+        mt5_timeframe = self._MT5_TIMEFRAME[self.bars_timeframe]
+        
+        # Determine how many candles to fetch
+        # If first time, get recent history; otherwise get latest few
+        count = self.rolling_bars if self._last_candle_time is None else 5
+        
+        # Fetch rates from broker using broker's server time
+        broker_time = datetime.fromtimestamp(current_time)
+        rates = mt5.copy_rates_from(self.symbol, mt5_timeframe, broker_time, count)
+        
+        if rates is None or len(rates) == 0:
+            return
+        
+        # Convert to DataFrame with proper column names
+        # Convert timestamps to UTC (timezone-aware)
+        df = pd.DataFrame(rates)
+        df["time"] = pd.to_datetime(df["time"], unit="s", utc=True)
+        
+        # Filter to only new candles (those after last fetched candle)
+        if self._last_candle_time is not None:
+            df = df[df["time"].astype(int) // 10**9 > self._last_candle_time]
+        
+        if df.empty:
+            return
+        
+        # Exclude the current forming candle (last one in the array)
+        # Only keep completed candles
+        if len(df) > 1:
+            # Check if last candle's period equals current period
+            last_candle_time = int(df["time"].iloc[-1].timestamp())
+            last_candle_period = self._get_period_start(last_candle_time)
+            
+            if last_candle_period >= current_period:
+                # Last candle is still forming, exclude it
+                df = df.iloc[:-1]
+        
+        if df.empty:
+            return
+        
+        # Select and rename columns to match expected format
+        df = df[["time", "open", "high", "low", "close", "tick_volume", "spread", "real_volume"]]
+        
+        # Append to bars buffer
         if self._bars.empty:
-            self._bars = closed_bars.copy()
+            self._bars = df.copy()
         else:
-            self._bars = pd.concat([self._bars, closed_bars])
-        self._bars = self._bars.iloc[-self.rolling_bars :]
-        self._last_bar_close = self._bars.index[-1]
+            self._bars = pd.concat([self._bars, df], ignore_index=True)
+        
+        # Enforce rolling window size
+        if len(self._bars) > self.rolling_bars:
+            self._bars = self._bars.iloc[-self.rolling_bars:].reset_index(drop=True)
+        
+        # Update last candle timestamp (use the latest completed candle)
+        self._last_candle_time = int(df["time"].iloc[-1].timestamp())
 
     def _ensure_connection(self) -> None:
         """
