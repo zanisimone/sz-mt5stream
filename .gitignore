@@ -1,3 +1,6 @@
+# Keep credentials and environment variables out of version control
+.env
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

@@ -1,5 +1,7 @@
+from collections import namedtuple
 from typing import Optional
 import MetaTrader5 as mt5
+from ..my_types import Tick
 
 
 class MT5Executor:
@@ -21,7 +23,7 @@ class MT5Executor:
         self.magic = magic
         self.deviation = deviation
 
-    def _tick(self, symbol: str):
+    def _tick(self, symbol: str) -> Tick:
         """
         Retrieve current tick snapshot for a symbol.
         Raises:
@@ -30,7 +32,7 @@ class MT5Executor:
         t = mt5.symbol_info_tick(symbol)
         if t is None:
             raise RuntimeError("No tick for symbol")
-        return t
+        return Tick(**t._asdict())
 
     def _send(self, request: dict) -> mt5.OrderSendResult:
         """
@@ -43,8 +45,15 @@ class MT5Executor:
             raise RuntimeError("order_send returned None")
         return res
 
-    def market_buy(self, symbol: str, volume: float, *, sl: Optional[float] = None, tp: Optional[float] = None,
-                   comment: str = "mt5stream") -> mt5.OrderSendResult:
+    def market_buy(
+        self,
+        symbol: str,
+        volume: float,
+        *,
+        sl: Optional[float] = None,
+        tp: Optional[float] = None,
+        comment: str = "mt5stream",
+    ) -> mt5.OrderSendResult:
         """
         Place a market buy order with optional SL/TP as absolute prices.
         Returns:
@@ -67,8 +76,15 @@ class MT5Executor:
         }
         return self._send(req)
 
-    def market_sell(self, symbol: str, volume: float, *, sl: Optional[float] = None, tp: Optional[float] = None,
-                    comment: str = "mt5stream") -> mt5.OrderSendResult:
+    def market_sell(
+        self,
+        symbol: str,
+        volume: float,
+        *,
+        sl: Optional[float] = None,
+        tp: Optional[float] = None,
+        comment: str = "mt5stream",
+    ) -> mt5.OrderSendResult:
         """
         Place a market sell order with optional SL/TP as absolute prices.
         Returns:
@@ -91,9 +107,16 @@ class MT5Executor:
         }
         return self._send(req)
 
-    def buy_limit(self, symbol: str, volume: float, price: float, *,
-                  sl: Optional[float] = None, tp: Optional[float] = None,
-                  comment: str = "mt5stream") -> mt5.OrderSendResult:
+    def buy_limit(
+        self,
+        symbol: str,
+        volume: float,
+        price: float,
+        *,
+        sl: Optional[float] = None,
+        tp: Optional[float] = None,
+        comment: str = "mt5stream",
+    ) -> mt5.OrderSendResult:
         """
         Place a buy limit pending order with optional SL/TP.
         Returns:
@@ -114,9 +137,16 @@ class MT5Executor:
         }
         return self._send(req)
 
-    def sell_limit(self, symbol: str, volume: float, price: float, *,
-                   sl: Optional[float] = None, tp: Optional[float] = None,
-                   comment: str = "mt5stream") -> mt5.OrderSendResult:
+    def sell_limit(
+        self,
+        symbol: str,
+        volume: float,
+        price: float,
+        *,
+        sl: Optional[float] = None,
+        tp: Optional[float] = None,
+        comment: str = "mt5stream",
+    ) -> mt5.OrderSendResult:
         """
         Place a sell limit pending order with optional SL/TP.
         Returns:
@@ -137,9 +167,16 @@ class MT5Executor:
         }
         return self._send(req)
 
-    def buy_stop(self, symbol: str, volume: float, price: float, *,
-                 sl: Optional[float] = None, tp: Optional[float] = None,
-                 comment: str = "mt5stream") -> mt5.OrderSendResult:
+    def buy_stop(
+        self,
+        symbol: str,
+        volume: float,
+        price: float,
+        *,
+        sl: Optional[float] = None,
+        tp: Optional[float] = None,
+        comment: str = "mt5stream",
+    ) -> mt5.OrderSendResult:
         """
         Place a buy stop pending order with optional SL/TP.
         Returns:
@@ -160,9 +197,16 @@ class MT5Executor:
         }
         return self._send(req)
 
-    def sell_stop(self, symbol: str, volume: float, price: float, *,
-                  sl: Optional[float] = None, tp: Optional[float] = None,
-                  comment: str = "mt5stream") -> mt5.OrderSendResult:
+    def sell_stop(
+        self,
+        symbol: str,
+        volume: float,
+        price: float,
+        *,
+        sl: Optional[float] = None,
+        tp: Optional[float] = None,
+        comment: str = "mt5stream",
+    ) -> mt5.OrderSendResult:
         """
         Place a sell stop pending order with optional SL/TP.
         Returns:
@@ -183,15 +227,19 @@ class MT5Executor:
         }
         return self._send(req)
 
-    def positions(self, symbol: Optional[str] = None):
+    def positions(self, symbol: Optional[str] = None) -> namedtuple:
         """
         Return open positions, optionally filtered by symbol.
         """
-        return mt5.positions_get(symbol=symbol) if symbol else mt5.positions_get()
+        return mt5.positions_get(symbol=symbol)
 
     def close_all(self, symbol: Optional[str] = None) -> int:
         """
         Close all open positions by sending an opposite market order with the same volume.
+
+        Only positions for which the order result retcode is DONE are counted as closed.
+        If an exception occurs during the closing process, it may interrupt and prevent further positions from being closed.
+
         Returns:
             Number of positions reported as closed by retcode DONE.
         """
@@ -203,9 +251,9 @@ class MT5Executor:
             if symbol and p.symbol != symbol:
                 continue
             if p.type == mt5.POSITION_TYPE_BUY:
-                res = self.market_sell(p.symbol, p.volume)
+                res = self.market_sell(p.symbol, p.volume, sl=p.sl, tp=p.tp)
             else:
-                res = self.market_buy(p.symbol, p.volume)
+                res = self.market_buy(p.symbol, p.volume, sl=p.sl, tp=p.tp)
             if res and res.retcode == mt5.TRADE_RETCODE_DONE:
                 closed += 1
         return closed

@@ -3,12 +3,14 @@
 Minimal library to stream real-time ticks from MetaTrader 5 into pandas DataFrames, fetch official broker candles with period-aware timing, auto-launch and log into MT5, and send basic orders (market/limit/stop) with optional SL/TP.
 
 Key features:
+
 - Real-time tick streaming with accurate broker timezone handling
 - Period-aware candle fetching - gets official MT5 candles exactly when periods close
 - Automatic timezone alignment for correct data retrieval
 - Complete candle data including tick volume, real volume, and spread
 
 The design is intentionally small and explicit:
+
 - One streaming class: `MT5Stream`
 - One execution adapter: `MT5Executor`
 
@@ -184,7 +186,7 @@ def trading_callback(ticks_df):
     """Process new ticks and make trading decisions"""
     latest_bid = ticks_df['bid'].iloc[-1]
     latest_ask = ticks_df['ask'].iloc[-1]
-    
+
     # Your trading logic here
     print(f"Bid: {latest_bid}, Ask: {latest_ask}")
 
@@ -225,14 +227,16 @@ except KeyboardInterrupt:
 The `stream.ticks` property returns a pandas DataFrame with real-time tick data.
 
 **Columns:**
+
 - `time` (datetime64): Timestamp in broker timezone
 - `bid` (float): Bid price
-- `ask` (float): Ask price  
+- `ask` (float): Ask price
 - `last` (float): Last traded price (0 for forex/CFDs)
 - `volume` (int): Trade volume (0 for forex/CFDs quote ticks)
 - `time_msc` (int): Timestamp in milliseconds
 
 **Example:**
+
 ```
                            time       bid       ask      last  volume        time_msc
 0  2025-10-14 01:10:23  1.08945   1.08952      0.0       0  1728869423542
@@ -247,9 +251,11 @@ The `stream.ticks` property returns a pandas DataFrame with real-time tick data.
 The `stream.bars` property returns a pandas DataFrame with official broker candles, indexed by time.
 
 **Index:**
+
 - `time` (datetime64): Candle timestamp in broker timezone
 
 **Columns:**
+
 - `open` (float): Opening price
 - `high` (float): Highest price
 - `low` (float): Lowest price
@@ -259,6 +265,7 @@ The `stream.bars` property returns a pandas DataFrame with official broker candl
 - `real_volume` (int): Actual traded volume
 
 **Example:**
+
 ```
 time                          open      high       low     close  tick_volume  spread  real_volume
 2025-10-14 01:05:00       1.08940   1.08965   1.08935   1.08950          234      15         1250
@@ -273,6 +280,7 @@ time                          open      high       low     close  tick_volume  s
 The `executor.positions()` method returns a list of `TradePosition` objects with the following attributes:
 
 **Attributes:**
+
 - `ticket` (int): Position ticket number
 - `time` (int): Position open time (Unix timestamp)
 - `type` (int): Position type (0=BUY, 1=SELL)
@@ -290,6 +298,7 @@ The `executor.positions()` method returns a list of `TradePosition` objects with
 - `external_id` (str): External identifier
 
 **Example:**
+
 ```python
 positions = executor.positions(symbol="EURUSD")
 for pos in positions:
@@ -307,6 +316,7 @@ for pos in positions:
 Order execution methods return an `OrderSendResult` object with the following attributes:
 
 **Attributes:**
+
 - `retcode` (int): Return code (10009 = success)
 - `deal` (int): Deal ticket if executed
 - `order` (int): Order ticket
@@ -319,6 +329,7 @@ Order execution methods return an `OrderSendResult` object with the following at
 - `retcode_external` (int): External return code
 
 **Example:**
+
 ```python
 result = executor.market_buy("EURUSD", volume=0.1, sl=1.0800, tp=1.0900)
 
@@ -333,6 +344,7 @@ else:
 ```
 
 **Common Return Codes:**
+
 - `10009`: Request completed successfully
 - `10013`: Invalid request
 - `10014`: Invalid volume

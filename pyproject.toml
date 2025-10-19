@@ -1,14 +1,21 @@
-[build-system]
-requires = ["setuptools>=68"]
-build-backend = "setuptools.build_meta"
-
 [project]
 name = "sz_mt5stream"
 version = "1.0.0"
 description = "Minimal MetaTrader 5 real-time tick stream with bar aggregation and order execution"
-authors = [{name = "Simone Zani"}]
+authors = [{ name = "Simone Zani" }, { name = "Giulia Talà" }]
 requires-python = ">=3.9"
-dependencies = ["MetaTrader5", "pandas"]
+dependencies = [
+    "MetaTrader5>=5.0.5370",
+    "pandas>=2.3.3",
+    "python-dotenv>=1.1.1",
+]
 
 [project.urls]
 Homepage = "https://github.com/zanisimone/sz_mt5stream"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[dependency-groups]
+dev = ["black>=25.9.0"]

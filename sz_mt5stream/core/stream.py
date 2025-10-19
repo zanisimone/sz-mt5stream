@@ -6,8 +6,7 @@ from datetime import datetime, timezone
 import pandas as pd
 import MetaTrader5 as mt5
 
-from ..types import Timeframe
-from ..utils import RESAMPLE_RULE, MT5_TIMEFRAME
+from ..my_types import Timeframe, MT5_TIMEFRAME
 from .connection import ensure_connection, ensure_symbol, reconnect
 
 
@@ -75,8 +74,21 @@ class MT5Stream:
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self._last_tick_msc: int = 0
-        self._ticks = pd.DataFrame(columns=["time", "bid", "ask", "last", "volume", "time_msc"])
-        self._bars = pd.DataFrame(columns=["time", "open", "high", "low", "close", "tick_volume", "spread", "real_volume"])
+        self._ticks = pd.DataFrame(
+            columns=["time", "bid", "ask", "last", "volume", "time_msc"]
+        )
+        self._bars = pd.DataFrame(
+            columns=[
+                "time",
+                "open",
+                "high",
+                "low",
+                "close",
+                "tick_volume",
+                "spread",
+                "real_volume",
+            ]
+        )
         self._last_candle_time: Optional[int] = None
 
     @property
@@ -115,7 +127,9 @@ class MT5Stream:
         if self._running:
             return
         self._running = True
-        self._thread = threading.Thread(target=self._loop, args=(callback,), daemon=True)
+        self._thread = threading.Thread(
+            target=self._loop, args=(callback,), daemon=True
+        )
         self._thread.start()
 
     def stop(self) -> None:
@@ -165,10 +179,8 @@ class MT5Stream:
             request_time = datetime.fromtimestamp(tick.time)
         else:
             request_time = datetime.now(timezone.utc).replace(tzinfo=None)
-        
-        ticks = mt5.copy_ticks_from(
-            self.symbol, request_time, 1000, mt5.COPY_TICKS_ALL
-        )
+
+        ticks = mt5.copy_ticks_from(self.symbol, request_time, 1000, mt5.COPY_TICKS_ALL)
         if ticks is None or len(ticks) == 0:
             return pd.DataFrame(columns=self._ticks.columns)
         df = pd.DataFrame(ticks)
@@ -194,15 +206,15 @@ class MT5Stream:
         """
         Get the start timestamp of the period that contains the given timestamp.
         This aligns timestamps to timeframe boundaries (e.g., M5 aligns to :00, :05, :10, etc.)
-        
+
         Args:
             timestamp: Unix timestamp in seconds
-            
+
         Returns:
             Unix timestamp of the period start
         """
         dt = datetime.fromtimestamp(timestamp, tz=timezone.utc)
-        
+
         if self.bars_timeframe == "M1":
             return int(dt.replace(second=0, microsecond=0).timestamp())
         elif self.bars_timeframe == "M5":
@@ -214,7 +226,9 @@ class MT5Stream:
         elif self.bars_timeframe == "H1":
             return int(dt.replace(minute=0, second=0, microsecond=0).timestamp())
         elif self.bars_timeframe == "D1":
-            return int(dt.replace(hour=0, minute=0, second=0, microsecond=0).timestamp())
+            return int(
+                dt.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+            )
         else:
             return timestamp
 
@@ -223,63 +237,74 @@ class MT5Stream:
         Fetch completed candles directly from MT5 broker data.
         This ensures candles match exactly what the broker provides,
         including accurate volume, spread, and OHLC values.
-        
+
         Only fetches when a new period has completed (e.g., new minute for M1, new 5-min for M5).
         """
         if not self.bars_timeframe:
             return
-        
+
         tick = mt5.symbol_info_tick(self.symbol)
         if tick is None:
             return
-        
+
         current_time = tick.time
         current_period = self._get_period_start(current_time)
-        
+
         if self._last_candle_time is not None:
             last_period = self._get_period_start(self._last_candle_time)
             if current_period <= last_period:
                 return
-        
+
         mt5_timeframe = MT5_TIMEFRAME[self.bars_timeframe]
-        
+
         count = self.rolling_bars if self._last_candle_time is None else 5
-        
+
         broker_time = datetime.fromtimestamp(current_time)
         rates = mt5.copy_rates_from(self.symbol, mt5_timeframe, broker_time, count)
-        
+
         if rates is None or len(rates) == 0:
             return
-        
+
         df = pd.DataFrame(rates)
         df["time"] = pd.to_datetime(df["time"], unit="s", utc=True)
-        
+
         if self._last_candle_time is not None:
             df = df[df["time"].astype(int) // 10**9 > self._last_candle_time]
-        
+
         if df.empty:
             return
-        
+
         if len(df) > 1:
             last_candle_time = int(df["time"].iloc[-1].timestamp())
             last_candle_period = self._get_period_start(last_candle_time)
-            
+
             if last_candle_period >= current_period:
                 df = df.iloc[:-1]
-        
+
         if df.empty:
             return
-        
-        df = df[["time", "open", "high", "low", "close", "tick_volume", "spread", "real_volume"]]
-        
+
+        df = df[
+            [
+                "time",
+                "open",
+                "high",
+                "low",
+                "close",
+                "tick_volume",
+                "spread",
+                "real_volume",
+            ]
+        ]
+
         if self._bars.empty:
             self._bars = df.copy()
         else:
             self._bars = pd.concat([self._bars, df], ignore_index=True)
-        
+
         if len(self._bars) > self.rolling_bars:
-            self._bars = self._bars.iloc[-self.rolling_bars:].reset_index(drop=True)
-        
+            self._bars = self._bars.iloc[-self.rolling_bars :].reset_index(drop=True)
+
         self._last_candle_time = int(df["time"].iloc[-1].timestamp())
 
     def _ensure_connection(self) -> None:
@@ -302,4 +327,6 @@ class MT5Stream:
         """
         Attempt a simple reconnection cycle to recover from transient errors.
         """
-        reconnect(self.terminal_path, self.login, self.password, self.server, self.symbol)
+        reconnect(
+            self.terminal_path, self.login, self.password, self.server, self.symbol
+        )
